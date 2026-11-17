@@ -87,3 +87,34 @@ class RowPage(BaseModel):
     fixed_columns: List[str]
     indicator_names: List[str] = Field(..., description="快照固化的当前指标名；旧分片没有的指标为 null")
     rows: List[dict]
+
+
+# ---------------------------------------------------------------------------
+# 质控抽检
+# ---------------------------------------------------------------------------
+
+class QcBatchCreateRequest(BaseModel):
+    snapshot_id: int = Field(..., description="已交付快照号（GET /rows 首次查询返回）")
+    indicator_name: str = Field(..., min_length=1, description="该快照中固化的指标名")
+    stations: List[str] = Field(
+        ...,
+        min_length=2,
+        max_length=8,
+        description="2~8 个互不相同的站点名；每站抽一条该指标非 NULL 的记录",
+    )
+
+
+class QcBatchItemOut(BaseModel):
+    station: str = Field(..., description="站点名")
+    shard_id: int = Field(..., description="来源分片 ID")
+    row_no: int = Field(..., description="分片文件内 0 基原始行号")
+    sampled_at: str = Field(..., description="固化的 UTC 采样时刻")
+    value: float = Field(..., description="固化的指标值")
+
+
+class QcBatchOut(BaseModel):
+    batch_id: int
+    snapshot_id: int
+    indicator_name: str = Field(..., description="建批时快照固化的指标名；之后改名不影响本批次")
+    created_at: str
+    items: List[QcBatchItemOut] = Field(..., description="批次条目，按站点名升序")

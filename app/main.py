@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import threading
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from . import catalog, ingest, query
+from . import catalog, ingest, qc, query
 from .config import FIXED_COLUMNS, MAX_INDICATORS
 from .db import connect, immediate_transaction, init_db
 from .models import (
@@ -23,6 +23,8 @@ from .models import (
     IndicatorChangeResponse,
     IndicatorOut,
     NotFound,
+    QcBatchCreateRequest,
+    QcBatchOut,
     RenameRequest,
     RowPage,
     SchemaOut,
@@ -236,6 +238,52 @@ def get_snapshot(snapshot_id: int, conn=Depends(get_conn)):
         indicator_names=meta["indicator_names"],
         shard_ids=meta["shard_ids"],
     )
+
+
+# ---------------------------------------------------------------------------
+# 质控抽检
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/qc/batches",
+    response_model=QcBatchOut,
+    status_code=201,
+    tags=["质控抽检"],
+    summary="创建抽检批次（从快照按站点抽样，固化来源与值）",
+)
+def create_qc_batch(
+    payload: QcBatchCreateRequest,
+    request: Request,
+    conn=Depends(get_conn),
+    lock=Depends(get_lock),
+):
+    # 建批是写操作：与字段变更/上传共用同一把锁 + 立即事务，
+    # 并由 qc_batch_items 的 (shard_id, row_no) 唯一约束兜底，并发不重复占行
+    with lock, immediate_transaction(conn):
+        result = qc.create_batch(
+            conn, payload.snapshot_id, payload.indicator_name, payload.stations
+        )
+    return result
+
+
+@app.get(
+    "/qc/batches",
+    response_model=List[QcBatchOut],
+    tags=["质控抽检"],
+    summary="列出全部抽检批次（含已固化条目）",
+)
+def list_qc_batches(conn=Depends(get_conn)):
+    return qc.list_batches(conn)
+
+
+@app.get(
+    "/qc/batches/{batch_id}",
+    response_model=QcBatchOut,
+    tags=["质控抽检"],
+    summary="查看某个抽检批次（上传/改名/重启均不影响）",
+)
+def get_qc_batch(batch_id: int, conn=Depends(get_conn)):
+    return qc.get_batch(conn, batch_id)
 
 
 @app.get("/", include_in_schema=False)

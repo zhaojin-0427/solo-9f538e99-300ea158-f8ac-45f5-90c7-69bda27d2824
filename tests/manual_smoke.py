@@ -96,6 +96,33 @@ def main() -> int:
     assert rejected.status_code == 409, rejected.text
     print("deleted-indicator upload rejected:", rejected.json()["detail"])
 
+    # ------------------------------------------------------------------
+    # 质控抽检：从已交付快照抽多站点记录，固化成批次
+    # ------------------------------------------------------------------
+    r = c.post("/qc/batches", json={
+        "snapshot_id": snap, "indicator_name": "硝酸盐", "stations": ["S1", "S2"],
+    })
+    assert r.status_code == 201, r.text
+    batch = r.json()
+    print("qc batch:", batch["batch_id"], batch["items"])
+    items = {it["station"]: it for it in batch["items"]}
+    assert items["S1"]["value"] == 11.5 and items["S1"]["shard_id"] != items["S2"]["shard_id"]
+    assert items["S2"]["value"] == 22.0
+
+    # 已入批的 (分片, 行号) 不得再选：同站同指标再建批 -> 无可行组合 409
+    again = c.post("/qc/batches", json={
+        "snapshot_id": snap, "indicator_name": "硝酸盐", "stations": ["S1", "S2"],
+    })
+    assert again.status_code == 409, again.text
+    print("re-sampling occupied rows rejected:", again.json()["detail"])
+
+    # 批次固化：删除指标、重启都不影响；此处验证删除后仍可读
+    c.delete("/schema/indicators/硝酸盐").raise_for_status()
+    frozen = c.get(f"/qc/batches/{batch['batch_id']}")
+    assert frozen.status_code == 200 and frozen.json() == batch
+    assert c.get("/qc/batches").json()[0]["batch_id"] == batch["batch_id"]
+    print("qc batch frozen after indicator delete:", frozen.json()["indicator_name"])
+
     print("\nSMOKE OK")
     return 0
 

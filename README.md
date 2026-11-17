@@ -56,6 +56,9 @@ DATA_DIR=./data uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `POST /ingest/parquet` | 表单上传：`schema_version`（必填）+ `file`（Parquet） |
 | `GET /rows` | 分页查询；首次不带 `snapshot_id` 即建快照，之后带快照号翻页 |
 | `GET /snapshots/{snapshot_id}` | 快照元数据（固化的字段名与分片） |
+| `POST /qc/batches` | 创建抽检批次：快照号 + 快照中的指标名 + 2~8 个不同站点 |
+| `GET /qc/batches` | 列出全部抽检批次（含已固化条目） |
+| `GET /qc/batches/{batch_id}` | 查看某个抽检批次 |
 | `GET /docs` | Swagger UI |
 
 ### Parquet 上传规则
@@ -78,6 +81,22 @@ DATA_DIR=./data uvicorn app.main:app --host 0.0.0.0 --port 8000
 * 不带快照号的新查询会生成新快照，反映最新字段与分片。
 * 分片内按 `(station, sampled_at)` 稳定排序后分页；`page_size` 上限 10000。
 
+### 质控抽检（抽检批次）
+
+水质质控员从已交付快照抽取多站点化验记录交人工复核：
+
+* `POST /qc/batches`，body：`{"snapshot_id": 1, "indicator_name": "硝酸盐", "stations": ["A", "B"]}`。
+  指标名必须是该快照固化的字段名；站点 2~8 个且互不相同；快照分片数须 ≤ 12。
+* 每站选一条该指标**非 NULL** 的记录（NaN 不参与抽检）；**同批分片不得重复**，
+  样本分散到不同来源分片。
+* 任何已入批的 `(分片 ID, 文件原始行号)` 全局不得再选；`row_no` 为分片文件内 0 基原始行号。
+* 有多种可行组合时，按站点名升序排列各站来源 `(shard_id, row_no)` 序列，取**字典序最小**者。
+* 无可行组合则**整批拒绝（409），不占任何行**。
+* 批次固化采样时刻、指标名与值、来源 `(shard_id, row_no)`；后续上传、改名、删除指标、
+  重启均不改变旧批次。
+* 并发建批在进程写锁 + `BEGIN IMMEDIATE` 事务内串行裁决，并由
+  `qc_batch_items` 的 `UNIQUE(shard_id, row_no)` 兜底，不会重复占行。
+
 ### 并发与一致性
 
 所有字段变更、上传与快照创建都在同一把进程写锁 + SQLite `BEGIN IMMEDIATE` 事务内裁决：
@@ -93,6 +112,7 @@ app/
   catalog.py   # 指标身份与字段版（新增/改名/删除）
   ingest.py    # Parquet 校验、按字段版映射身份、原子落盘
   query.py     # 快照创建与分页合读
+  qc.py        # 抽检批次：选样、字典序裁决、占行与固化
   main.py      # FastAPI 路由与并发控制
 tests/         # pytest 自测 + 独立 HTTP 冒烟脚本
 Dockerfile

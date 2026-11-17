@@ -83,11 +83,36 @@ CREATE TABLE IF NOT EXISTS snapshot_shards (
     PRIMARY KEY (snapshot_id, shard_id)
 );
 
+-- 抽检批次：固化快照号、指标身份与建批当时的指标名（改名不影响旧批次）
+CREATE TABLE IF NOT EXISTS qc_batches (
+    batch_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id    INTEGER NOT NULL REFERENCES snapshots(snapshot_id),
+    indicator_id   INTEGER NOT NULL REFERENCES indicators(indicator_id),
+    indicator_name TEXT NOT NULL,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- 批次条目：每站一条；固化来源 (shard_id, row_no)、采样时刻与指标值
+CREATE TABLE IF NOT EXISTS qc_batch_items (
+    batch_id   INTEGER NOT NULL REFERENCES qc_batches(batch_id),
+    station    TEXT NOT NULL,
+    shard_id   INTEGER NOT NULL REFERENCES shards(shard_id),
+    row_no     INTEGER NOT NULL CHECK (row_no >= 0),
+    sampled_at TEXT NOT NULL,
+    value      REAL NOT NULL,
+    PRIMARY KEY (batch_id, station)
+);
+
 CREATE INDEX IF NOT EXISTS idx_indicators_active ON indicators(active);
 CREATE INDEX IF NOT EXISTS idx_version_indicators_version
     ON version_indicators(version_id);
 CREATE INDEX IF NOT EXISTS idx_shard_indicators_indicator
     ON shard_indicators(indicator_id);
+
+-- 全局占行：任何已入批的 (分片 ID, 文件原始行号) 不得再选；
+-- 并发建批在此唯一约束上硬裁决，冲突即整批回滚
+CREATE UNIQUE INDEX IF NOT EXISTS idx_qc_items_shard_row
+    ON qc_batch_items(shard_id, row_no);
 """
 
 
